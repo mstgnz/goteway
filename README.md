@@ -221,7 +221,7 @@ type Plugin interface {
     Name() string
 
     // Initialize initializes the plugin
-    Initialize(config map[string]interface{}, log *logger.Logger) error
+    Initialize(config map[string]any, log *logger.Logger) error
 
     // ProcessRequest processes a request
     ProcessRequest(w http.ResponseWriter, r *http.Request, next http.Handler)
@@ -261,7 +261,7 @@ func (p *ExamplePlugin) Name() string {
 }
 
 // Initialize initializes the plugin
-func (p *ExamplePlugin) Initialize(config map[string]interface{}, log *logger.Logger) error {
+func (p *ExamplePlugin) Initialize(config map[string]any, log *logger.Logger) error {
     p.log = log
 
     if message, ok := config["message"].(string); ok {

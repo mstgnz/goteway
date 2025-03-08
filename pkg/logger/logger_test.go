@@ -65,63 +65,63 @@ func TestLogMethods(t *testing.T) {
 	tests := []struct {
 		name      string
 		level     LogLevel
-		logFunc   func(*Logger, string, ...interface{})
+		logFunc   func(*Logger, string, ...any)
 		message   string
-		args      []interface{}
+		args      []any
 		wantLevel string
 		shouldLog bool
 	}{
 		{
 			name:      "debug at debug level",
 			level:     DEBUG,
-			logFunc:   func(l *Logger, f string, v ...interface{}) { l.Debug(f, v...) },
+			logFunc:   func(l *Logger, f string, v ...any) { l.Debug(f, v...) },
 			message:   "test message %s",
-			args:      []interface{}{"arg"},
+			args:      []any{"arg"},
 			wantLevel: "DEBUG",
 			shouldLog: true,
 		},
 		{
 			name:      "debug at info level",
 			level:     INFO,
-			logFunc:   func(l *Logger, f string, v ...interface{}) { l.Debug(f, v...) },
+			logFunc:   func(l *Logger, f string, v ...any) { l.Debug(f, v...) },
 			message:   "test message",
-			args:      []interface{}{},
+			args:      []any{},
 			wantLevel: "DEBUG",
 			shouldLog: false,
 		},
 		{
 			name:      "info at info level",
 			level:     INFO,
-			logFunc:   func(l *Logger, f string, v ...interface{}) { l.Info(f, v...) },
+			logFunc:   func(l *Logger, f string, v ...any) { l.Info(f, v...) },
 			message:   "test message",
-			args:      []interface{}{},
+			args:      []any{},
 			wantLevel: "INFO",
 			shouldLog: true,
 		},
 		{
 			name:      "warn at warn level",
 			level:     WARN,
-			logFunc:   func(l *Logger, f string, v ...interface{}) { l.Warn(f, v...) },
+			logFunc:   func(l *Logger, f string, v ...any) { l.Warn(f, v...) },
 			message:   "test message",
-			args:      []interface{}{},
+			args:      []any{},
 			wantLevel: "WARN",
 			shouldLog: true,
 		},
 		{
 			name:      "error at error level",
 			level:     ERROR,
-			logFunc:   func(l *Logger, f string, v ...interface{}) { l.Error(f, v...) },
+			logFunc:   func(l *Logger, f string, v ...any) { l.Error(f, v...) },
 			message:   "test message",
-			args:      []interface{}{},
+			args:      []any{},
 			wantLevel: "ERROR",
 			shouldLog: true,
 		},
 		{
 			name:      "info at error level",
 			level:     ERROR,
-			logFunc:   func(l *Logger, f string, v ...interface{}) { l.Info(f, v...) },
+			logFunc:   func(l *Logger, f string, v ...any) { l.Info(f, v...) },
 			message:   "test message",
-			args:      []interface{}{},
+			args:      []any{},
 			wantLevel: "INFO",
 			shouldLog: false,
 		},

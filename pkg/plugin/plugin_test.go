@@ -19,7 +19,7 @@ func (p *MockPlugin) Name() string {
 	return p.name
 }
 
-func (p *MockPlugin) Initialize(config map[string]interface{}, log *logger.Logger) error {
+func (p *MockPlugin) Initialize(config map[string]any, log *logger.Logger) error {
 	p.initializeCount++
 	return nil
 }

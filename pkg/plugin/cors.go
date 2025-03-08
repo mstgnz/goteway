@@ -30,24 +30,24 @@ func (p *CORSPlugin) Name() string {
 }
 
 // Initialize initializes the plugin
-func (p *CORSPlugin) Initialize(config map[string]interface{}, log *logger.Logger) error {
+func (p *CORSPlugin) Initialize(config map[string]any, log *logger.Logger) error {
 	p.log = log
 
-	if origins, ok := config["allowedOrigins"].([]interface{}); ok {
+	if origins, ok := config["allowedOrigins"].([]any); ok {
 		p.allowedOrigins = make([]string, len(origins))
 		for i, origin := range origins {
 			p.allowedOrigins[i] = origin.(string)
 		}
 	}
 
-	if methods, ok := config["allowedMethods"].([]interface{}); ok {
+	if methods, ok := config["allowedMethods"].([]any); ok {
 		p.allowedMethods = make([]string, len(methods))
 		for i, method := range methods {
 			p.allowedMethods[i] = method.(string)
 		}
 	}
 
-	if headers, ok := config["allowedHeaders"].([]interface{}); ok {
+	if headers, ok := config["allowedHeaders"].([]any); ok {
 		p.allowedHeaders = make([]string, len(headers))
 		for i, header := range headers {
 			p.allowedHeaders[i] = header.(string)

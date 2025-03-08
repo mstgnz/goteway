@@ -11,7 +11,7 @@ type Plugin interface {
 	// Name returns the name of the plugin
 	Name() string
 	// Initialize initializes the plugin
-	Initialize(config map[string]interface{}, log *logger.Logger) error
+	Initialize(config map[string]any, log *logger.Logger) error
 	// ProcessRequest processes a request
 	ProcessRequest(w http.ResponseWriter, r *http.Request, next http.Handler)
 }

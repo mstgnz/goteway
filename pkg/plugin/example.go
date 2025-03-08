@@ -26,7 +26,7 @@ func (p *ExamplePlugin) Name() string {
 }
 
 // Initialize initializes the plugin
-func (p *ExamplePlugin) Initialize(config map[string]interface{}, log *logger.Logger) error {
+func (p *ExamplePlugin) Initialize(config map[string]any, log *logger.Logger) error {
 	p.log = log
 
 	if message, ok := config["message"].(string); ok {

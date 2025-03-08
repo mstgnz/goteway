@@ -49,35 +49,35 @@ func New(level LogLevel) *Logger {
 }
 
 // Debug logs a debug message
-func (l *Logger) Debug(format string, v ...interface{}) {
+func (l *Logger) Debug(format string, v ...any) {
 	if l.level <= DEBUG {
 		l.log(DEBUG, format, v...)
 	}
 }
 
 // Info logs an info message
-func (l *Logger) Info(format string, v ...interface{}) {
+func (l *Logger) Info(format string, v ...any) {
 	if l.level <= INFO {
 		l.log(INFO, format, v...)
 	}
 }
 
 // Warn logs a warning message
-func (l *Logger) Warn(format string, v ...interface{}) {
+func (l *Logger) Warn(format string, v ...any) {
 	if l.level <= WARN {
 		l.log(WARN, format, v...)
 	}
 }
 
 // Error logs an error message
-func (l *Logger) Error(format string, v ...interface{}) {
+func (l *Logger) Error(format string, v ...any) {
 	if l.level <= ERROR {
 		l.log(ERROR, format, v...)
 	}
 }
 
 // Fatal logs a fatal message and exits
-func (l *Logger) Fatal(format string, v ...interface{}) {
+func (l *Logger) Fatal(format string, v ...any) {
 	if l.level <= FATAL {
 		l.log(FATAL, format, v...)
 		exitFunc(1)
@@ -85,7 +85,7 @@ func (l *Logger) Fatal(format string, v ...interface{}) {
 }
 
 // log logs a message with the given level
-func (l *Logger) log(level LogLevel, format string, v ...interface{}) {
+func (l *Logger) log(level LogLevel, format string, v ...any) {
 	timestamp := time.Now().Format("2006-01-02 15:04:05")
 	levelName := levelNames[level]
 	message := fmt.Sprintf(format, v...)
