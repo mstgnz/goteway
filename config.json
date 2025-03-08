@@ -1,0 +1,31 @@
+{
+  "server": {
+    "port": 8080,
+    "host": "0.0.0.0"
+  },
+  "routes": [
+    {
+      "path": "/api/users",
+      "target": "http://localhost:8081",
+      "methods": ["GET", "POST", "PUT", "DELETE"],
+      "middlewares": ["logging", "ratelimit", "auth", "cors", "example"],
+      "rateLimit": {
+        "limit": 100,
+        "window": 60
+      },
+      "auth": {
+        "type": "basic",
+        "config": {
+          "username": "admin",
+          "password": "password"
+        }
+      }
+    },
+    {
+      "path": "/api/products",
+      "target": "http://localhost:8082",
+      "methods": ["GET", "POST"],
+      "middlewares": ["logging", "cors"]
+    }
+  ]
+} 
