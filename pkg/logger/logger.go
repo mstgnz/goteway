@@ -31,6 +31,9 @@ var levelNames = map[LogLevel]string{
 	FATAL: "FATAL",
 }
 
+// For testing
+var exitFunc = os.Exit
+
 // Logger represents a logger
 type Logger struct {
 	level  LogLevel
@@ -77,7 +80,7 @@ func (l *Logger) Error(format string, v ...interface{}) {
 func (l *Logger) Fatal(format string, v ...interface{}) {
 	if l.level <= FATAL {
 		l.log(FATAL, format, v...)
-		os.Exit(1)
+		exitFunc(1)
 	}
 }
 
