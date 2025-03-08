@@ -19,7 +19,14 @@
 
 # Go workspace file
 go.work
-go.work.sum
 
-# env file
-.env
+# IDE files
+.idea/
+.vscode/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Binary
+goteway
