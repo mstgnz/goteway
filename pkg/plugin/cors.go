@@ -7,7 +7,7 @@ import (
 	"github.com/mstgnz/goteway/pkg/logger"
 )
 
-// CORSPlugin represents a CORS plugin
+// CORSPlugin handles Cross-Origin Resource Sharing headers.
 type CORSPlugin struct {
 	allowedOrigins []string
 	allowedMethods []string
@@ -15,7 +15,8 @@ type CORSPlugin struct {
 	log            *logger.Logger
 }
 
-// NewCORSPlugin creates a new CORS plugin
+// NewCORSPlugin creates a new CORS plugin. The default allowedOrigins is ["*"];
+// configure explicit origins via the "cors" entry in config.json plugins.
 func NewCORSPlugin() *CORSPlugin {
 	return &CORSPlugin{
 		allowedOrigins: []string{"*"},
@@ -29,9 +30,13 @@ func (p *CORSPlugin) Name() string {
 	return "cors"
 }
 
-// Initialize initializes the plugin
+// Initialize sets up the plugin with optional config overrides.
 func (p *CORSPlugin) Initialize(config map[string]any, log *logger.Logger) error {
 	p.log = log
+
+	if config == nil {
+		return nil
+	}
 
 	if origins, ok := config["allowedOrigins"].([]any); ok {
 		p.allowedOrigins = make([]string, len(origins))
@@ -65,7 +70,6 @@ func (p *CORSPlugin) ProcessRequest(w http.ResponseWriter, r *http.Request, next
 		return
 	}
 
-	// Check if the origin is allowed
 	allowed := false
 	for _, allowedOrigin := range p.allowedOrigins {
 		if allowedOrigin == "*" || allowedOrigin == origin {
@@ -75,18 +79,19 @@ func (p *CORSPlugin) ProcessRequest(w http.ResponseWriter, r *http.Request, next
 	}
 
 	if !allowed {
-		p.log.Warn("CORS: Origin not allowed: %s", origin)
-		next.ServeHTTP(w, r)
+		p.log.Warn("CORS: origin not allowed: %s", origin)
+		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
 	}
 
-	// Set CORS headers
+	// Vary: Origin must be set whenever the response varies by Origin so that
+	// caches do not serve one client's preflight response to another.
+	w.Header().Add("Vary", "Origin")
 	w.Header().Set("Access-Control-Allow-Origin", origin)
 	w.Header().Set("Access-Control-Allow-Methods", strings.Join(p.allowedMethods, ", "))
 	w.Header().Set("Access-Control-Allow-Headers", strings.Join(p.allowedHeaders, ", "))
 
-	// Handle preflight requests
-	if r.Method == "OPTIONS" {
+	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusOK)
 		return
 	}

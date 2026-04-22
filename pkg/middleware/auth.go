@@ -1,9 +1,14 @@
 package middleware
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
+	"encoding/json"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/mstgnz/goteway/pkg/logger"
 )
@@ -12,12 +17,9 @@ import (
 type AuthType string
 
 const (
-	// BasicAuth represents basic authentication
-	BasicAuth AuthType = "basic"
-	// APIKeyAuth represents API key authentication
+	BasicAuth  AuthType = "basic"
 	APIKeyAuth AuthType = "apikey"
-	// JWTAuth represents JWT authentication
-	JWTAuth AuthType = "jwt"
+	JWTAuth    AuthType = "jwt"
 )
 
 // Authenticator represents an authenticator
@@ -25,18 +27,18 @@ type Authenticator interface {
 	Authenticate(r *http.Request) bool
 }
 
-// BasicAuthenticator represents a basic authenticator
+// BasicAuthenticator authenticates via HTTP Basic Auth
 type BasicAuthenticator struct {
-	username string
-	password string
+	username []byte
+	password []byte
 	log      *logger.Logger
 }
 
 // NewBasicAuthenticator creates a new basic authenticator
 func NewBasicAuthenticator(username, password string, log *logger.Logger) *BasicAuthenticator {
 	return &BasicAuthenticator{
-		username: username,
-		password: password,
+		username: []byte(username),
+		password: []byte(password),
 		log:      log,
 	}
 }
@@ -64,13 +66,16 @@ func (a *BasicAuthenticator) Authenticate(r *http.Request) bool {
 		return false
 	}
 
-	return pair[0] == a.username && pair[1] == a.password
+	// Constant-time comparison to prevent timing attacks
+	userMatch := subtle.ConstantTimeCompare([]byte(pair[0]), a.username)
+	passMatch := subtle.ConstantTimeCompare([]byte(pair[1]), a.password)
+	return userMatch&passMatch == 1
 }
 
-// APIKeyAuthenticator represents an API key authenticator
+// APIKeyAuthenticator authenticates via a header-based API key
 type APIKeyAuthenticator struct {
 	header string
-	key    string
+	key    []byte
 	log    *logger.Logger
 }
 
@@ -78,7 +83,7 @@ type APIKeyAuthenticator struct {
 func NewAPIKeyAuthenticator(header, key string, log *logger.Logger) *APIKeyAuthenticator {
 	return &APIKeyAuthenticator{
 		header: header,
-		key:    key,
+		key:    []byte(key),
 		log:    log,
 	}
 }
@@ -86,7 +91,68 @@ func NewAPIKeyAuthenticator(header, key string, log *logger.Logger) *APIKeyAuthe
 // Authenticate authenticates a request using an API key
 func (a *APIKeyAuthenticator) Authenticate(r *http.Request) bool {
 	key := r.Header.Get(a.header)
-	return key == a.key
+	// Constant-time comparison to prevent timing attacks
+	return subtle.ConstantTimeCompare([]byte(key), a.key) == 1
+}
+
+// JWTAuthenticator authenticates requests using HS256-signed JWT tokens.
+type JWTAuthenticator struct {
+	secret []byte
+	log    *logger.Logger
+}
+
+// NewJWTAuthenticator creates a new JWT authenticator with an HMAC-SHA256 secret.
+func NewJWTAuthenticator(secret string, log *logger.Logger) *JWTAuthenticator {
+	return &JWTAuthenticator{
+		secret: []byte(secret),
+		log:    log,
+	}
+}
+
+// Authenticate validates the Bearer JWT in the Authorization header.
+func (a *JWTAuthenticator) Authenticate(r *http.Request) bool {
+	auth := r.Header.Get("Authorization")
+	if !strings.HasPrefix(auth, "Bearer ") {
+		return false
+	}
+	return a.verifyHS256(strings.TrimPrefix(auth, "Bearer "))
+}
+
+func (a *JWTAuthenticator) verifyHS256(token string) bool {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return false
+	}
+
+	mac := hmac.New(sha256.New, a.secret)
+	mac.Write([]byte(parts[0] + "." + parts[1]))
+	expected := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+
+	if subtle.ConstantTimeCompare([]byte(expected), []byte(parts[2])) != 1 {
+		a.log.Warn("JWT: invalid signature")
+		return false
+	}
+
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		a.log.Warn("JWT: failed to decode payload: %v", err)
+		return false
+	}
+
+	var claims map[string]any
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		a.log.Warn("JWT: failed to parse claims: %v", err)
+		return false
+	}
+
+	if exp, ok := claims["exp"].(float64); ok {
+		if time.Now().Unix() > int64(exp) {
+			a.log.Warn("JWT: token expired")
+			return false
+		}
+	}
+
+	return true
 }
 
 // AuthMiddleware creates a middleware that authenticates requests

@@ -11,12 +11,10 @@ import (
 )
 
 func main() {
-	// Parse command line flags
 	configPath := flag.String("config", "config.json", "Path to the configuration file")
 	logLevelFlag := flag.String("log-level", "info", "Log level (debug, info, warn, error, fatal)")
 	flag.Parse()
 
-	// Determine the log level
 	var logLevel logger.LogLevel
 	switch *logLevelFlag {
 	case "debug":
@@ -33,35 +31,35 @@ func main() {
 		logLevel = logger.INFO
 	}
 
-	// Create a logger
 	log := logger.New(logLevel)
 
-	// Create a gateway
 	gw, err := gateway.New(*configPath, logLevel)
 	if err != nil {
 		log.Fatal("Failed to create gateway: %v", err)
 	}
 
-	// Handle signals
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
-	// Start the gateway in a goroutine
+	errChan := make(chan error, 1)
 	go func() {
 		if err := gw.Start(); err != nil {
-			log.Fatal("Failed to start gateway: %v", err)
+			errChan <- err
 		}
 	}()
 
 	log.Info("Gateway started. Press Ctrl+C to stop.")
 
-	// Wait for a signal
-	<-sigChan
-	log.Info("Shutting down...")
+	select {
+	case sig := <-sigChan:
+		log.Info("Received signal %s, shutting down...", sig)
+	case err := <-errChan:
+		log.Error("Gateway error: %v", err)
+	}
 
-	// Stop the gateway
 	if err := gw.Stop(); err != nil {
 		log.Error("Failed to stop gateway: %v", err)
+		os.Exit(1)
 	}
 
 	log.Info("Gateway stopped.")

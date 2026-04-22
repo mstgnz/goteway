@@ -1,6 +1,7 @@
 package logger
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -11,15 +12,10 @@ import (
 type LogLevel int
 
 const (
-	// DEBUG level
 	DEBUG LogLevel = iota
-	// INFO level
 	INFO
-	// WARN level
 	WARN
-	// ERROR level
 	ERROR
-	// FATAL level
 	FATAL
 )
 
@@ -34,13 +30,13 @@ var levelNames = map[LogLevel]string{
 // For testing
 var exitFunc = os.Exit
 
-// Logger represents a logger
+// Logger writes structured JSON log lines.
 type Logger struct {
 	level  LogLevel
 	logger *log.Logger
 }
 
-// New creates a new logger
+// New creates a new Logger that writes JSON to stdout.
 func New(level LogLevel) *Logger {
 	return &Logger{
 		level:  level,
@@ -48,35 +44,30 @@ func New(level LogLevel) *Logger {
 	}
 }
 
-// Debug logs a debug message
 func (l *Logger) Debug(format string, v ...any) {
 	if l.level <= DEBUG {
 		l.log(DEBUG, format, v...)
 	}
 }
 
-// Info logs an info message
 func (l *Logger) Info(format string, v ...any) {
 	if l.level <= INFO {
 		l.log(INFO, format, v...)
 	}
 }
 
-// Warn logs a warning message
 func (l *Logger) Warn(format string, v ...any) {
 	if l.level <= WARN {
 		l.log(WARN, format, v...)
 	}
 }
 
-// Error logs an error message
 func (l *Logger) Error(format string, v ...any) {
 	if l.level <= ERROR {
 		l.log(ERROR, format, v...)
 	}
 }
 
-// Fatal logs a fatal message and exits
 func (l *Logger) Fatal(format string, v ...any) {
 	if l.level <= FATAL {
 		l.log(FATAL, format, v...)
@@ -84,10 +75,25 @@ func (l *Logger) Fatal(format string, v ...any) {
 	}
 }
 
-// log logs a message with the given level
+type logEntry struct {
+	Time  string `json:"time"`
+	Level string `json:"level"`
+	Msg   string `json:"msg"`
+}
+
 func (l *Logger) log(level LogLevel, format string, v ...any) {
-	timestamp := time.Now().Format("2006-01-02 15:04:05")
-	levelName := levelNames[level]
-	message := fmt.Sprintf(format, v...)
-	l.logger.Printf("[%s] [%s] %s", timestamp, levelName, message)
+	var msg string
+	if len(v) > 0 {
+		msg = fmt.Sprintf(format, v...)
+	} else {
+		msg = format
+	}
+
+	entry := logEntry{
+		Time:  time.Now().UTC().Format(time.RFC3339),
+		Level: levelNames[level],
+		Msg:   msg,
+	}
+	data, _ := json.Marshal(entry)
+	l.logger.Print(string(data))
 }

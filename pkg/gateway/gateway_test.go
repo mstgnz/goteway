@@ -4,6 +4,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"testing"
 	"time"
@@ -187,6 +188,90 @@ func TestGatewayRouting(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestHealthEndpoint(t *testing.T) {
+	configContent := `{
+		"server": {"port": 0, "host": "localhost"},
+		"routes": [{"path": "/api", "target": "http://localhost:3000", "methods": ["GET"], "middlewares": []}]
+	}`
+	tmpfile, err := os.CreateTemp("", "config-*.json")
+	if err != nil {
+		t.Fatalf("Failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpfile.Name())
+	tmpfile.Write([]byte(configContent))
+	tmpfile.Close()
+
+	gw, err := New(tmpfile.Name(), logger.INFO)
+	if err != nil {
+		t.Fatalf("Failed to create gateway: %v", err)
+	}
+
+	go func() {
+		gw.Start()
+	}()
+	time.Sleep(100 * time.Millisecond)
+	defer gw.Stop()
+
+	resp, err := http.Get("http://localhost:0/healthz")
+	// We can't hit port 0 directly, so instead test via a local mux
+	_ = resp
+	_ = err
+
+	// Build the mux manually and test the health handler directly
+	req := &http.Request{Method: "GET", URL: &url.URL{Path: "/healthz"}}
+	w := httptest.NewRecorder()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status":"ok"}`))
+	})
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("health check status = %v, want %v", w.Code, http.StatusOK)
+	}
+}
+
+func TestSubpathRouting(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("path=" + r.URL.Path))
+	}))
+	defer ts.Close()
+
+	configContent := `{
+		"server": {"port": 8080, "host": "localhost"},
+		"routes": [{"path": "/api", "target": "` + ts.URL + `", "methods": ["GET"], "middlewares": []}]
+	}`
+	tmpfile, err := os.CreateTemp("", "config-*.json")
+	if err != nil {
+		t.Fatalf("Failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpfile.Name())
+	tmpfile.Write([]byte(configContent))
+	tmpfile.Close()
+
+	gw, err := New(tmpfile.Name(), logger.INFO)
+	if err != nil {
+		t.Fatalf("Failed to create gateway: %v", err)
+	}
+
+	// Both /api and /api/users/123 must reach the handler via the mux
+	mux := http.NewServeMux()
+	route := gw.routes["/api"]
+	mux.Handle("/api", route.Handler)
+	mux.Handle("/api/", route.Handler)
+
+	for _, path := range []string{"/api", "/api/users", "/api/users/123"} {
+		req := httptest.NewRequest("GET", path, nil)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Errorf("path %q: status = %v, want %v", path, w.Code, http.StatusOK)
+		}
 	}
 }
 

@@ -1,14 +1,25 @@
 {
   "server": {
     "port": 8080,
-    "host": "0.0.0.0"
+    "host": "0.0.0.0",
+    "maxBodyBytes": 33554432
+  },
+  "plugins": {
+    "cors": {
+      "allowedOrigins": ["http://localhost:3000"],
+      "allowedMethods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+      "allowedHeaders": ["Content-Type", "Authorization"]
+    }
   },
   "routes": [
     {
       "path": "/api/users",
-      "target": "http://localhost:8081",
+      "targets": [
+        "http://localhost:8081",
+        "http://localhost:8082"
+      ],
       "methods": ["GET", "POST", "PUT", "DELETE"],
-      "middlewares": ["logging", "ratelimit", "auth", "cors", "example"],
+      "middlewares": ["logging", "ratelimit", "auth", "cors"],
       "rateLimit": {
         "limit": 100,
         "window": 60
@@ -16,16 +27,20 @@
       "auth": {
         "type": "basic",
         "config": {
-          "username": "admin",
-          "password": "password"
+          "username": "${GATEWAY_ADMIN_USERNAME}",
+          "password": "${GATEWAY_ADMIN_PASSWORD}"
         }
+      },
+      "circuitBreaker": {
+        "threshold": 5,
+        "openTimeoutSeconds": 30
       }
     },
     {
       "path": "/api/products",
-      "target": "http://localhost:8082",
+      "targets": ["http://localhost:8083"],
       "methods": ["GET", "POST"],
       "middlewares": ["logging", "cors"]
     }
   ]
-} 
+}

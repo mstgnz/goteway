@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -93,6 +94,39 @@ func TestRateLimiter(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRateLimiterIPExtraction(t *testing.T) {
+	log := logger.New(logger.INFO)
+	limiter := NewRateLimiter(2, time.Second, log)
+	defer limiter.Stop()
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	wrapped := RateLimitMiddleware(limiter)(handler)
+
+	// Requests from same IP but different ports must share the same bucket
+	allowed := 0
+	for port := 1000; port < 1005; port++ {
+		req := httptest.NewRequest("GET", "/", nil)
+		req.RemoteAddr = fmt.Sprintf("10.0.0.1:%d", port)
+		w := httptest.NewRecorder()
+		wrapped.ServeHTTP(w, req)
+		if w.Result().StatusCode == http.StatusOK {
+			allowed++
+		}
+	}
+	if allowed != 2 {
+		t.Errorf("expected 2 allowed requests for same IP across different ports, got %d", allowed)
+	}
+}
+
+func TestRateLimiterStop(t *testing.T) {
+	log := logger.New(logger.INFO)
+	limiter := NewRateLimiter(10, 100*time.Millisecond, log)
+	// Stop must not panic and must be safe to call once
+	limiter.Stop()
 }
 
 func TestRateLimitMiddleware(t *testing.T) {

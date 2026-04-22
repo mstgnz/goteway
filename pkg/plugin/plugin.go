@@ -8,11 +8,9 @@ import (
 
 // Plugin represents a plugin
 type Plugin interface {
-	// Name returns the name of the plugin
 	Name() string
-	// Initialize initializes the plugin
+	// Initialize is called once when the plugin is registered. config may be nil.
 	Initialize(config map[string]any, log *logger.Logger) error
-	// ProcessRequest processes a request
 	ProcessRequest(w http.ResponseWriter, r *http.Request, next http.Handler)
 }
 
@@ -30,10 +28,21 @@ func NewManager(log *logger.Logger) *Manager {
 	}
 }
 
-// RegisterPlugin registers a plugin
-func (m *Manager) RegisterPlugin(plugin Plugin) {
-	m.plugins[plugin.Name()] = plugin
-	m.log.Info("Registered plugin: %s", plugin.Name())
+// RegisterPlugin registers and initializes a plugin. An optional config map may
+// be passed as the second argument; it is forwarded to Plugin.Initialize.
+func (m *Manager) RegisterPlugin(p Plugin, configs ...map[string]any) {
+	var cfg map[string]any
+	if len(configs) > 0 {
+		cfg = configs[0]
+	}
+
+	if err := p.Initialize(cfg, m.log); err != nil {
+		m.log.Error("Failed to initialize plugin %s: %v", p.Name(), err)
+		return
+	}
+
+	m.plugins[p.Name()] = p
+	m.log.Info("Registered plugin: %s", p.Name())
 }
 
 // GetPlugin returns a plugin by name

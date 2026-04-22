@@ -1,12 +1,78 @@
 package middleware
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/mstgnz/goteway/pkg/logger"
 )
+
+func makeJWT(secret string, exp int64) string {
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`))
+	claims, _ := json.Marshal(map[string]any{"sub": "test", "exp": exp})
+	payload := base64.RawURLEncoding.EncodeToString(claims)
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(fmt.Sprintf("%s.%s", header, payload)))
+	sig := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+	return fmt.Sprintf("%s.%s.%s", header, payload, sig)
+}
+
+func TestJWTAuthenticator(t *testing.T) {
+	log := logger.New(logger.INFO)
+	secret := "test-secret"
+	auth := NewJWTAuthenticator(secret, log)
+
+	tests := []struct {
+		name        string
+		token       string
+		wantSuccess bool
+	}{
+		{
+			name:        "valid token",
+			token:       makeJWT(secret, time.Now().Add(time.Hour).Unix()),
+			wantSuccess: true,
+		},
+		{
+			name:        "expired token",
+			token:       makeJWT(secret, time.Now().Add(-time.Hour).Unix()),
+			wantSuccess: false,
+		},
+		{
+			name:        "wrong secret",
+			token:       makeJWT("wrong-secret", time.Now().Add(time.Hour).Unix()),
+			wantSuccess: false,
+		},
+		{
+			name:        "no bearer prefix",
+			token:       "",
+			wantSuccess: false,
+		},
+		{
+			name:        "malformed token",
+			token:       "not.a.jwt",
+			wantSuccess: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", "http://example.com/foo", nil)
+			if tt.token != "" {
+				req.Header.Set("Authorization", "Bearer "+tt.token)
+			}
+			if got := auth.Authenticate(req); got != tt.wantSuccess {
+				t.Errorf("Authenticate() = %v, want %v", got, tt.wantSuccess)
+			}
+		})
+	}
+}
 
 func TestBasicAuthenticator(t *testing.T) {
 	// Create a logger

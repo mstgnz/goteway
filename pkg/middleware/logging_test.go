@@ -27,6 +27,31 @@ func (w *testResponseWriter) Header() http.Header {
 	return http.Header{}
 }
 
+func TestResponseWriterFlusher(t *testing.T) {
+	flushed := false
+	base := &flusherWriter{flushed: &flushed}
+	rw := &responseWriter{ResponseWriter: base, statusCode: http.StatusOK}
+	rw.Flush()
+	if !flushed {
+		t.Error("Flush() did not forward to underlying Flusher")
+	}
+}
+
+func TestResponseWriterHijacker(t *testing.T) {
+	rw := &responseWriter{ResponseWriter: httptest.NewRecorder(), statusCode: http.StatusOK}
+	_, _, err := rw.Hijack()
+	if err == nil {
+		t.Error("expected error when underlying writer does not support hijacking")
+	}
+}
+
+type flusherWriter struct {
+	http.ResponseWriter
+	flushed *bool
+}
+
+func (f *flusherWriter) Flush() { *f.flushed = true }
+
 func TestLoggingMiddleware(t *testing.T) {
 	// Create a logger
 	testLogger := logger.New(logger.DEBUG)
