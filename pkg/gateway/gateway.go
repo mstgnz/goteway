@@ -1,12 +1,15 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/mstgnz/goteway/pkg/balancer"
@@ -20,13 +23,16 @@ import (
 
 // Gateway represents an API gateway
 type Gateway struct {
+	configPath    string
 	config        *config.Config
 	log           *logger.Logger
 	pluginManager *plugin.Manager
 	server        *http.Server
+	mux           atomic.Pointer[http.ServeMux] // swapped atomically on reload
+	mu            sync.Mutex                    // serialises reload
 	routes        map[string]*Route
 	rateLimiters  []*middleware.RateLimiter
-	metrics       *gatewayMetrics
+	gm            *gatewayMetrics
 }
 
 type gatewayMetrics struct {
@@ -58,10 +64,10 @@ func New(configPath string, logLevel logger.LogLevel) (*Gateway, error) {
 	pluginManager.RegisterPlugin(plugin.NewExamplePlugin(), cfg.Plugins["example"])
 
 	reg := metrics.DefaultRegistry
-	m := &gatewayMetrics{
+	gm := &gatewayMetrics{
 		requestsTotal: reg.NewCounter(
 			"goteway_requests_total",
-			"Total number of proxied requests.",
+			"Total proxied requests.",
 			"route", "method", "status",
 		),
 		requestDuration: reg.NewHistogram(
@@ -71,7 +77,7 @@ func New(configPath string, logLevel logger.LogLevel) (*Gateway, error) {
 		),
 		activeRequests: reg.NewGauge(
 			"goteway_active_requests",
-			"Number of currently active requests.",
+			"Currently active requests.",
 			"route",
 		),
 		cbState: reg.NewGauge(
@@ -82,21 +88,24 @@ func New(configPath string, logLevel logger.LogLevel) (*Gateway, error) {
 	}
 
 	g := &Gateway{
+		configPath:    configPath,
 		config:        cfg,
 		log:           log,
 		pluginManager: pluginManager,
 		routes:        make(map[string]*Route),
-		metrics:       m,
+		gm:            gm,
 	}
 
 	if err := g.initialize(); err != nil {
 		return nil, err
 	}
+	g.mux.Store(g.buildMux())
 
 	return g, nil
 }
 
-// initialize sets up all routes from the configuration.
+// initialize sets up all routes from g.config. Must be called with g.mu held
+// (or before the server starts).
 func (g *Gateway) initialize() error {
 	for _, routeConfig := range g.config.Routes {
 		targets := make([]*url.URL, 0, len(routeConfig.Targets))
@@ -119,7 +128,7 @@ func (g *Gateway) initialize() error {
 			route.Methods[method] = true
 		}
 
-		// Optionally configure circuit breaker for this route
+		// Per-route circuit breaker
 		var cb *circuitbreaker.CircuitBreaker
 		if routeConfig.CircuitBreaker != nil {
 			cb = circuitbreaker.New(
@@ -128,38 +137,54 @@ func (g *Gateway) initialize() error {
 				time.Duration(routeConfig.CircuitBreaker.OpenTimeoutSeconds)*time.Second,
 				g.log,
 			)
-			g.metrics.cbState.Set(0, route.Path) // start closed
+			g.gm.cbState.Set(0, route.Path)
+		}
+
+		// Build retry configuration (defaults when not set)
+		retryCount := 0
+		retryWait := time.Duration(0)
+		retryOn := map[int]bool{502: true, 503: true, 504: true}
+		if routeConfig.Retry != nil {
+			retryCount = routeConfig.Retry.Count
+			retryWait = time.Duration(routeConfig.Retry.WaitMilliseconds) * time.Millisecond
+			if len(routeConfig.Retry.RetryOnStatus) > 0 {
+				retryOn = make(map[int]bool, len(routeConfig.Retry.RetryOnStatus))
+				for _, s := range routeConfig.Retry.RetryOnStatus {
+					retryOn[s] = true
+				}
+			}
 		}
 
 		maxBodyBytes := g.config.Server.MaxBodyBytes
-		gm := g.metrics
+		gm := g.gm
 		routePath := route.Path
+		log := g.log
+
+		// Safe HTTP methods — retry is only allowed for these to avoid
+		// re-sending a non-idempotent request body.
+		safeMethods := map[string]bool{
+			http.MethodGet:     true,
+			http.MethodHead:    true,
+			http.MethodDelete:  true,
+			http.MethodOptions: true,
+		}
 
 		var handler http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if !route.Methods[r.Method] {
-				g.log.Warn("Method not allowed: %s %s", r.Method, r.URL.Path)
+				log.Warn("Method not allowed: %s %s", r.Method, r.URL.Path)
 				http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 				return
 			}
 
-			// Circuit breaker check
-			if cb != nil {
-				if !cb.Allow() {
-					state := int64(cb.State())
-					gm.cbState.Set(state, routePath)
-					http.Error(w, "Service unavailable", http.StatusServiceUnavailable)
-					return
-				}
+			if cb != nil && !cb.Allow() {
+				gm.cbState.Set(int64(cb.State()), routePath)
+				http.Error(w, "Service unavailable", http.StatusServiceUnavailable)
+				return
 			}
 
 			r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
 
-			proxy, targetURL := lb.Next()
-
-			r.URL.Host = targetURL.Host
-			r.URL.Scheme = targetURL.Scheme
-			r.Host = targetURL.Host
-
+			// Strip route prefix once before the retry loop
 			if after, ok := strings.CutPrefix(r.URL.Path, route.Path); ok {
 				r.URL.Path = after
 				if r.URL.Path == "" {
@@ -167,14 +192,54 @@ func (g *Gateway) initialize() error {
 				}
 			}
 
-			g.log.Debug("Proxying: %s %s -> %s", r.Method, r.URL.Path, targetURL)
+			// Determine effective retry count (safe methods only)
+			effective := 0
+			if retryCount > 0 && safeMethods[r.Method] {
+				effective = retryCount
+			}
+			maxAttempts := effective + 1
 
-			// Capture status for circuit breaker and metrics
-			sw := &statusCapture{ResponseWriter: w, status: http.StatusOK}
-			proxy.ServeHTTP(sw, r)
+			var finalStatus int
+
+			for attempt := 0; attempt < maxAttempts; attempt++ {
+				if attempt > 0 {
+					if retryWait > 0 {
+						time.Sleep(retryWait)
+					}
+					log.Warn("Retry %d/%d: %s %s", attempt, effective, r.Method, r.URL.Path)
+				}
+
+				proxy, targetURL := lb.Next()
+				r.URL.Host = targetURL.Host
+				r.URL.Scheme = targetURL.Scheme
+				r.Host = targetURL.Host
+
+				isLast := attempt == maxAttempts-1
+
+				if isLast {
+					// Final attempt — write directly so streaming works
+					sc := &statusCapture{ResponseWriter: w, status: http.StatusOK}
+					proxy.ServeHTTP(sc, r)
+					finalStatus = sc.status
+				} else {
+					// Intermediate attempt — buffer so we can retry on failure
+					buf := newResponseBuffer()
+					proxy.ServeHTTP(buf, r)
+					finalStatus = buf.status
+					if !retryOn[finalStatus] {
+						buf.copyTo(w) // success: flush buffer
+						break
+					}
+					// Failure: discard buffer and retry
+				}
+
+				if !retryOn[finalStatus] {
+					break
+				}
+			}
 
 			if cb != nil {
-				if sw.status >= 500 {
+				if finalStatus >= 500 {
 					cb.RecordFailure()
 				} else {
 					cb.RecordSuccess()
@@ -183,7 +248,7 @@ func (g *Gateway) initialize() error {
 			}
 		})
 
-		// Apply configured middlewares
+		// Apply configured middlewares (innermost to outermost)
 		for _, name := range routeConfig.Middlewares {
 			if _, ok := g.pluginManager.GetPlugin(name); ok {
 				handler = g.pluginManager.Middleware(name)(handler)
@@ -192,6 +257,8 @@ func (g *Gateway) initialize() error {
 			switch name {
 			case "logging":
 				handler = middleware.LoggingMiddleware(g.log)(handler)
+			case "requestid":
+				handler = middleware.RequestIDMiddleware()(handler)
 			case "ratelimit":
 				if routeConfig.RateLimit != nil {
 					limiter := middleware.NewRateLimiter(
@@ -234,20 +301,18 @@ func (g *Gateway) initialize() error {
 			}
 		}
 
-		// Outermost layer: automatic metrics tracking for every route
-		innerHandler := handler
+		// Outermost: automatic metrics tracking for every route
+		inner := handler
 		handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
 			gm.activeRequests.Inc(routePath)
 			defer gm.activeRequests.Dec(routePath)
 
 			sw := &statusCapture{ResponseWriter: w, status: http.StatusOK}
-			innerHandler.ServeHTTP(sw, r)
+			inner.ServeHTTP(sw, r)
 
-			elapsed := time.Since(start).Seconds()
-			status := strconv.Itoa(sw.status)
-			gm.requestsTotal.Inc(routePath, r.Method, status)
-			gm.requestDuration.Observe(elapsed, routePath, r.Method)
+			gm.requestsTotal.Inc(routePath, r.Method, strconv.Itoa(sw.status))
+			gm.requestDuration.Observe(time.Since(start).Seconds(), routePath, r.Method)
 		})
 
 		route.Handler = handler
@@ -258,24 +323,21 @@ func (g *Gateway) initialize() error {
 	return nil
 }
 
-// Start starts the gateway
-func (g *Gateway) Start() error {
+// buildMux constructs a new ServeMux from the current routes.
+func (g *Gateway) buildMux() *http.ServeMux {
 	mux := http.NewServeMux()
 
-	// Health check
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"status":"ok"}`))
 	})
 
-	// Prometheus-compatible metrics endpoint
 	mux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 		metrics.DefaultRegistry.WriteText(w)
 	})
 
-	// Register routes under exact and subtree patterns for Go 1.22+ compatibility
 	for _, route := range g.routes {
 		mux.Handle(route.Path, route.Handler)
 		if !strings.HasSuffix(route.Path, "/") {
@@ -283,9 +345,45 @@ func (g *Gateway) Start() error {
 		}
 	}
 
+	return mux
+}
+
+// Reload re-reads the config file and atomically swaps the route mux.
+// In-flight requests finish against the old mux; new requests use the new one.
+func (g *Gateway) Reload() error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	cfg, err := config.LoadConfig(g.configPath)
+	if err != nil {
+		return fmt.Errorf("reload: failed to load config: %w", err)
+	}
+
+	// Stop old rate limiters before rebuilding
+	for _, rl := range g.rateLimiters {
+		rl.Stop()
+	}
+	g.rateLimiters = nil
+	g.routes = make(map[string]*Route)
+	g.config = cfg
+
+	if err := g.initialize(); err != nil {
+		return fmt.Errorf("reload: failed to initialize routes: %w", err)
+	}
+
+	g.mux.Store(g.buildMux())
+	g.log.Info("Configuration reloaded: %d route(s) active", len(g.routes))
+	return nil
+}
+
+// Start starts the gateway
+func (g *Gateway) Start() error {
 	g.server = &http.Server{
-		Addr:              fmt.Sprintf("%s:%d", g.config.Server.Host, g.config.Server.Port),
-		Handler:           mux,
+		Addr: fmt.Sprintf("%s:%d", g.config.Server.Host, g.config.Server.Port),
+		// Delegate to the atomically swapped mux so Reload() takes effect immediately.
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			g.mux.Load().ServeHTTP(w, r)
+		}),
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      30 * time.Second,
 		IdleTimeout:       120 * time.Second,
@@ -315,6 +413,8 @@ func (g *Gateway) Stop() error {
 	return nil
 }
 
+// --- helpers ------------------------------------------------------------------
+
 // statusCapture wraps http.ResponseWriter to record the written status code.
 type statusCapture struct {
 	http.ResponseWriter
@@ -324,4 +424,28 @@ type statusCapture struct {
 func (sc *statusCapture) WriteHeader(code int) {
 	sc.status = code
 	sc.ResponseWriter.WriteHeader(code)
+}
+
+// responseBuffer is an in-memory ResponseWriter used for buffering retry
+// attempts so that a failed response is never partially flushed to the client.
+type responseBuffer struct {
+	header http.Header
+	status int
+	body   bytes.Buffer
+}
+
+func newResponseBuffer() *responseBuffer {
+	return &responseBuffer{header: make(http.Header), status: http.StatusOK}
+}
+
+func (rb *responseBuffer) Header() http.Header         { return rb.header }
+func (rb *responseBuffer) WriteHeader(code int)        { rb.status = code }
+func (rb *responseBuffer) Write(b []byte) (int, error) { return rb.body.Write(b) }
+
+func (rb *responseBuffer) copyTo(w http.ResponseWriter) {
+	for k, vs := range rb.header {
+		w.Header()[k] = vs
+	}
+	w.WriteHeader(rb.status)
+	rb.body.WriteTo(w)
 }

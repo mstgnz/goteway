@@ -28,14 +28,15 @@ type TLSConfig struct {
 
 // Route represents a route configuration
 type Route struct {
-	Path           string               `json:"path"`
-	Target         string               `json:"target"`
-	Targets        []string             `json:"targets,omitempty"` // multiple targets for load balancing
-	Methods        []string             `json:"methods"`
-	Middlewares    []string             `json:"middlewares"`
-	RateLimit      *RateLimitConfig     `json:"rateLimit,omitempty"`
-	Auth           *AuthConfig          `json:"auth,omitempty"`
+	Path           string                `json:"path"`
+	Target         string                `json:"target"`
+	Targets        []string              `json:"targets,omitempty"` // multiple targets for load balancing
+	Methods        []string              `json:"methods"`
+	Middlewares    []string              `json:"middlewares"`
+	RateLimit      *RateLimitConfig      `json:"rateLimit,omitempty"`
+	Auth           *AuthConfig           `json:"auth,omitempty"`
 	CircuitBreaker *CircuitBreakerConfig `json:"circuitBreaker,omitempty"`
+	Retry          *RetryConfig          `json:"retry,omitempty"`
 }
 
 // RateLimitConfig represents rate limiting configuration
@@ -48,6 +49,17 @@ type RateLimitConfig struct {
 type AuthConfig struct {
 	Type   string            `json:"type"` // "basic", "apikey", "jwt"
 	Config map[string]string `json:"config"`
+}
+
+// RetryConfig configures automatic retries for safe HTTP methods (GET, HEAD, DELETE, OPTIONS).
+type RetryConfig struct {
+	// Count is the maximum number of retry attempts (not counting the first try).
+	Count int `json:"count"`
+	// WaitMilliseconds is the delay between retries.
+	WaitMilliseconds int `json:"waitMilliseconds"`
+	// RetryOnStatus lists the HTTP status codes that trigger a retry.
+	// Defaults to [502, 503, 504] when empty.
+	RetryOnStatus []int `json:"retryOnStatus,omitempty"`
 }
 
 // CircuitBreakerConfig configures the per-route circuit breaker.

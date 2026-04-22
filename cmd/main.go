@@ -19,8 +19,6 @@ func main() {
 	switch *logLevelFlag {
 	case "debug":
 		logLevel = logger.DEBUG
-	case "info":
-		logLevel = logger.INFO
 	case "warn":
 		logLevel = logger.WARN
 	case "error":
@@ -38,8 +36,10 @@ func main() {
 		log.Fatal("Failed to create gateway: %v", err)
 	}
 
+	// SIGINT / SIGTERM → graceful shutdown
+	// SIGHUP           → hot-reload config without downtime
 	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 
 	errChan := make(chan error, 1)
 	go func() {
@@ -48,19 +48,29 @@ func main() {
 		}
 	}()
 
-	log.Info("Gateway started. Press Ctrl+C to stop.")
+	log.Info("Gateway started. SIGINT/SIGTERM to stop, SIGHUP to reload config.")
 
-	select {
-	case sig := <-sigChan:
-		log.Info("Received signal %s, shutting down...", sig)
-	case err := <-errChan:
-		log.Error("Gateway error: %v", err)
+	for {
+		select {
+		case sig := <-sigChan:
+			switch sig {
+			case syscall.SIGHUP:
+				log.Info("SIGHUP received — reloading configuration")
+				if err := gw.Reload(); err != nil {
+					log.Error("Config reload failed: %v", err)
+				}
+			default:
+				log.Info("Signal %s received, shutting down", sig)
+				if err := gw.Stop(); err != nil {
+					log.Error("Failed to stop gateway: %v", err)
+					os.Exit(1)
+				}
+				log.Info("Gateway stopped.")
+				return
+			}
+		case err := <-errChan:
+			log.Error("Gateway error: %v", err)
+			return
+		}
 	}
-
-	if err := gw.Stop(); err != nil {
-		log.Error("Failed to stop gateway: %v", err)
-		os.Exit(1)
-	}
-
-	log.Info("Gateway stopped.")
 }

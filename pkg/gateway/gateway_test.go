@@ -275,6 +275,152 @@ func TestSubpathRouting(t *testing.T) {
 	}
 }
 
+func TestRetryOnBackendFailure(t *testing.T) {
+	attempts := 0
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts < 3 {
+			w.WriteHeader(http.StatusBadGateway) // 502 — retryable
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("ok"))
+	}))
+	defer ts.Close()
+
+	configContent := `{
+		"server": {"port": 8080, "host": "localhost"},
+		"routes": [{
+			"path": "/api",
+			"target": "` + ts.URL + `",
+			"methods": ["GET"],
+			"middlewares": [],
+			"retry": {"count": 3, "waitMilliseconds": 0, "retryOnStatus": [502]}
+		}]
+	}`
+	tmpfile, err := os.CreateTemp("", "config-*.json")
+	if err != nil {
+		t.Fatalf("Failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpfile.Name())
+	tmpfile.Write([]byte(configContent))
+	tmpfile.Close()
+
+	gw, err := New(tmpfile.Name(), logger.INFO)
+	if err != nil {
+		t.Fatalf("Failed to create gateway: %v", err)
+	}
+
+	route := gw.routes["/api"]
+	req := httptest.NewRequest("GET", "/api/test", nil)
+	w := httptest.NewRecorder()
+	route.Handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200 after retries", w.Code)
+	}
+	if attempts != 3 {
+		t.Errorf("backend called %d times, want 3", attempts)
+	}
+}
+
+func TestRetryNotCalledForPost(t *testing.T) {
+	attempts := 0
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer ts.Close()
+
+	configContent := `{
+		"server": {"port": 8080, "host": "localhost"},
+		"routes": [{
+			"path": "/api",
+			"target": "` + ts.URL + `",
+			"methods": ["POST"],
+			"middlewares": [],
+			"retry": {"count": 3, "waitMilliseconds": 0}
+		}]
+	}`
+	tmpfile, err := os.CreateTemp("", "config-*.json")
+	if err != nil {
+		t.Fatalf("Failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpfile.Name())
+	tmpfile.Write([]byte(configContent))
+	tmpfile.Close()
+
+	gw, err := New(tmpfile.Name(), logger.INFO)
+	if err != nil {
+		t.Fatalf("Failed to create gateway: %v", err)
+	}
+
+	route := gw.routes["/api"]
+	req := httptest.NewRequest("POST", "/api", nil)
+	w := httptest.NewRecorder()
+	route.Handler.ServeHTTP(w, req)
+
+	if attempts != 1 {
+		t.Errorf("POST should not be retried: backend called %d times, want 1", attempts)
+	}
+}
+
+func TestHotReload(t *testing.T) {
+	ts1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("backend1"))
+	}))
+	defer ts1.Close()
+
+	ts2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("backend2"))
+	}))
+	defer ts2.Close()
+
+	// Initial config pointing to ts1
+	cfg1 := `{"server":{"port":8080,"host":"localhost"},"routes":[{"path":"/api","target":"` + ts1.URL + `","methods":["GET"],"middlewares":[]}]}`
+	tmpfile, err := os.CreateTemp("", "config-*.json")
+	if err != nil {
+		t.Fatalf("Failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpfile.Name())
+	tmpfile.Write([]byte(cfg1))
+	tmpfile.Close()
+
+	gw, err := New(tmpfile.Name(), logger.INFO)
+	if err != nil {
+		t.Fatalf("Failed to create gateway: %v", err)
+	}
+
+	// Verify initial route points to ts1
+	if _, ok := gw.routes["/api"]; !ok {
+		t.Fatal("route /api not found before reload")
+	}
+
+	// Write new config pointing to ts2
+	cfg2 := `{"server":{"port":8080,"host":"localhost"},"routes":[{"path":"/api","target":"` + ts2.URL + `","methods":["GET"],"middlewares":[]}]}`
+	if err := os.WriteFile(tmpfile.Name(), []byte(cfg2), 0o600); err != nil {
+		t.Fatalf("Failed to write new config: %v", err)
+	}
+
+	// Reload
+	if err := gw.Reload(); err != nil {
+		t.Fatalf("Reload() error: %v", err)
+	}
+
+	// Route should still exist (new backend)
+	if _, ok := gw.routes["/api"]; !ok {
+		t.Fatal("route /api not found after reload")
+	}
+
+	// Verify /healthz still works via the atomic mux
+	req := httptest.NewRequest("GET", "/healthz", nil)
+	w := httptest.NewRecorder()
+	gw.mux.Load().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("/healthz after reload: status = %d, want 200", w.Code)
+	}
+}
+
 func TestGatewayStartStop(t *testing.T) {
 	// Create a temporary config file
 	configContent := `{
