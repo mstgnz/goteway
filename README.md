@@ -12,20 +12,21 @@ Goteway is a production-ready API Gateway for microservices architectures. It fo
 
 ## Features
 
-- **Zero external dependencies** — only the Go standard library
+- **Zero external dependencies:** only the Go standard library
 - **Round-robin load balancing** across multiple backend targets
-- **Circuit breaker** — Closed/Open/Half-Open state machine per route
+- **Circuit breaker:** Closed/Open/Half-Open state machine per route
 - **Automatic retries** with response buffering (safe methods only)
-- **Config hot-reload** — send SIGHUP, no downtime
-- **Authentication** — Basic Auth, API Key, JWT (HS256)
-- **Rate limiting** — sliding-window, per-IP, with background cleanup
-- **CORS** — per-route origin allowlist with `Vary: Origin`
-- **Request ID** — generates or forwards `X-Request-ID` for log correlation
-- **Structured JSON logging** — compatible with any log aggregation stack
+- **Config hot-reload:** send SIGHUP, no downtime
+- **Authentication:** Basic Auth, API Key, JWT (HS256)
+- **Rate limiting:** sliding-window, per-IP, with background cleanup
+- **CORS:** per-route origin allowlist with `Vary: Origin`
+- **Request ID:** generates or forwards `X-Request-ID` for log correlation
+- **Structured JSON logging,** compatible with any log aggregation stack
 - **Prometheus-compatible metrics** at `/metrics`
 - **Health check** at `/healthz`
-- **TLS termination** — configure `certFile` / `keyFile`
-- **Plugin system** — extend with custom middleware plugins
+- **Graceful shutdown:** in-flight requests drain before the process exits
+- **TLS termination:** configure `certFile` / `keyFile`
+- **Plugin system:** extend with custom middleware plugins
 - **Environment variable expansion** in config (`${MY_SECRET}`)
 
 ## Installation
@@ -214,7 +215,7 @@ Only applied to safe, idempotent methods: `GET`, `HEAD`, `DELETE`, `OPTIONS`. PO
 
 | Field | Description | Default |
 |-------|-------------|---------|
-| `count` | Maximum retry attempts | — |
+| `count` | Maximum retry attempts | (none) |
 | `waitMilliseconds` | Delay between retries | `0` |
 | `retryOnStatus` | HTTP status codes that trigger a retry | `[502, 503, 504]` |
 
@@ -236,7 +237,7 @@ Global plugin configuration lives under `"plugins"`:
 
 ## Middlewares
 
-Add middleware names to a route's `"middlewares"` array. Order matters — they are applied left to right (outermost first).
+Add middleware names to a route's `"middlewares"` array. Order matters; they are applied left to right (outermost first).
 
 | Name | Description |
 |------|-------------|
@@ -245,7 +246,7 @@ Add middleware names to a route's `"middlewares"` array. Order matters — they 
 | `ratelimit` | Sliding-window rate limiter per client IP |
 | `auth` | Authenticates via Basic Auth, API Key, or JWT |
 | `cors` | Sets CORS headers; enforces origin allowlist |
-| `example` | Sample plugin — adds `X-Example-Plugin` header |
+| `example` | Sample plugin, adds `X-Example-Plugin` header |
 
 Metrics are tracked automatically for every route regardless of which middlewares are enabled.
 
@@ -253,7 +254,7 @@ Metrics are tracked automatically for every route regardless of which middleware
 
 | Endpoint | Description |
 |----------|-------------|
-| `GET /healthz` | Returns `{"status":"ok"}` — use for liveness probes |
+| `GET /healthz` | Returns `{"status":"ok"}`, use for liveness probes |
 | `GET /metrics` | Prometheus-compatible text format metrics |
 
 ### Available Metrics
@@ -307,10 +308,11 @@ Then add it to any route's `"middlewares"` list in config.
 ## Security
 
 - All credential comparisons use `crypto/subtle.ConstantTimeCompare` to prevent timing attacks
-- Credentials must be provided via environment variables — never hardcode secrets in `config.json`
+- Credentials must be provided via environment variables. Never hardcode secrets in `config.json`
 - HTTP server enforces `ReadTimeout`, `WriteTimeout`, `IdleTimeout`, and `ReadHeaderTimeout` to prevent Slowloris attacks
 - Request bodies are limited to `maxBodyBytes` (default 32 MB)
 - CORS plugin sets `Vary: Origin` to prevent cache poisoning
+- Graceful shutdown drains in-flight requests before the process exits; connections are never abruptly closed
 
 ## Project Structure
 
@@ -352,4 +354,4 @@ make clean    # Remove build artifacts
 
 ## License
 
-MIT License — see [LICENSE](LICENSE) for details.
+MIT License. See [LICENSE](LICENSE) for details.
